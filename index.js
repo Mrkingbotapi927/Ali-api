@@ -5,12 +5,14 @@ const PORT = process.env.PORT || 3000;
 // --- IMPORT ALL PANELS ---
 const roxy = require("./api/roxy");
 const np = require("./api/np");
-const goat = require("./api/goat"); // <-- NEW
+const goat = require("./api/goat");
+const msi = require("./api/msi"); // <-- NEW
 
 // --- ROUTES ---
 app.use("/api/roxy", roxy);
 app.use("/api/np", np);
-app.use("/api/goat", goat); // <-- NEW
+app.use("/api/goat", goat);
+app.use("/api/msi", msi); // <-- NEW
 
 // --- HEALTH CHECK ---
 app.get("/", (req,res)=> res.send("API RUNNING ✅"));
