@@ -7,14 +7,14 @@ const roxy = require("./api/roxy");
 const np = require("./api/np");
 const goat = require("./api/goat"); 
 const msi = require("./api/msi");
-const ts = require("./api/ts"); // <-- NEW
+const Ts = require("./api/Ts"); // <-- NEW
 
 // --- ROUTES ---
 app.use("/api/roxy", roxy);
 app.use("/api/np", np);
 app.use("/api/goat", goat);
 app.use("/api/msi", msi);
-app.use("/api/ts", ts); // <-- NEW
+app.use("/api/ts", Ts); // <-- NEW
 
 // --- HEALTH CHECK ---
 app.get("/", (req,res)=> res.send("API RUNNING ✅"));
