@@ -6,7 +6,7 @@ const PORT = process.env.PORT || 3000;
 const roxy = require("./api/roxy");
 const np = require("./api/np");
 const goat = require("./api/goat");
-const np = require("./api/ivas");
+const ivas = require("./api/ivas");
 const msi = require("./api/msi"); // <-- NEW
 
 // --- ROUTES ---
