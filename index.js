@@ -13,7 +13,7 @@ const msi = require("./api/msi"); // <-- NEW
 app.use("/api/roxy", roxy);
 app.use("/api/np", np);
 app.use("/api/goat", goat);
-app.use("/api/np", ivas);
+app.use("/api/ivas", ivas);
 app.use("/api/msi", msi); // <-- NEW
 
 // --- HEALTH CHECK ---
