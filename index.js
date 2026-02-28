@@ -6,13 +6,15 @@ const PORT = process.env.PORT || 3000;
 const roxy = require("./api/roxy");
 const np = require("./api/np");
 const goat = require("./api/goat"); 
-const msi = require("./api/msi"); // <-- NEW
+const msi = require("./api/msi");
+const ts = require("./api/ts"); // <-- NEW
 
 // --- ROUTES ---
 app.use("/api/roxy", roxy);
 app.use("/api/np", np);
 app.use("/api/goat", goat);
-app.use("/api/msi", msi); // <-- NEW
+app.use("/api/msi", msi);
+app.use("/api/ts", ts); // <-- NEW
 
 // --- HEALTH CHECK ---
 app.get("/", (req,res)=> res.send("API RUNNING ✅"));
