@@ -6,15 +6,15 @@ const router = express.Router();
 
 /* ================= CONFIG ================= */
 const BASE_URL       = "https://www.ivasms.com";
-const TERMINATION_ID = "82774";
+const TERMINATION_ID = "970639";
 const USER_AGENT     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36";
 
 /* ================= COOKIES (Update when expired) ================= */
 // Jab expire ho: browser me login karo → DevTools → Network → koi bhi request
 // → Request Headers → Cookie se XSRF-TOKEN aur ivas_sms_session copy karo
 let COOKIES = {
-  "XSRF-TOKEN":       "eyJpdiI6IkFHVlY3T0ZEMXJXZ09QV3dra3l6TGc9PSIsInZhbHVlIjoiUVlTRG5DVGI5cnFYeEY2K0ZQZ3h2bDIxS2Zab3psZXFqSnRRWVIxdTAzdWNRd09rNktJUlY0VWh0Mm1mN2ZQVTN4M0dWanFFS0dkR3JiazFyc0lWYlZ6cGdtUHFKZ0ViY1ZtZmdnODU0Q0NqTnFmMk1DbkNOcFdGNlNwNzVXYVUiLCJtYWMiOiJmNmFjNGEwYjdjNjU3ZTE3NDUzMDY4YmMzODk3NGFkYjQ2MDIzMzdmM2U2NDliNzkxYTc2Y2ZmN2QwMDA3YzA2IiwidGFnIjoiIn0%3D",
-  "ivas_sms_session": "eyJpdiI6IkxzRVp2MWY1RnlnWmptTmZlSVRCblE9PSIsInZhbHVlIjoiaEs0ZXNCY3Z1UUZ4cTI1SWQ5UFJ3WkFIR0UvZndtbmovUFpNMkViMGJKeXVjcXkzeWxqakpPQWhVNzVUSk1SemFQRkIvelZrWTFuR3BNTDI1cFlYTGI4UjBzS0d2RXV2WUpxKzNUZmErZWRXSzVQOHpXRXcwaCtvd0NCN2U4ZjgiLCJtYWMiOiI5NjhlZjIzNGE1MGM2OTkwZTk1MTczZjcxNmIwMTIzOWE2MDgzNDAwZjdhZGUyZDM4ZDBkMGE0MzljMTE5NGM4IiwidGFnIjoiIn0%3D"
+  "XSRF-TOKEN":       "eyJpdiI6InpldHRyNDR5Z2RpMzRvUkRCc2ZUclE9PSIsInZhbHVlIjoiRDI4S1lQSW0zZEdSSHQ5RWdPNktnT0RDd2dBM0srTUNSK09TNk9Hazg3bFQ1SEd1citBNHhLb1A3M3JDcDRTZWlYV3ZFMzlOd0FEMitZckFscHZZREVwRkJwa2lVVXg3OXZMSDNRcEZlU05uUk9Fd0hsbHVDRlFpRmVCd08yankiLCJtYWMiOiI5YWQyZGRlYmZkNTJkZTQ0NjBlZDQ1MWUxNDExODJmMjViZmZlZDEwM2JiZDE0Yzg4ZTQ4MTk3NzIyYzAzYzczIiwidGFnIjoiIn0%3D",
+  "ivas_sms_session": "eyJpdiI6IjRXa0NVMEtETHNUR2luN1Q3S2xYTGc9PSIsInZhbHVlIjoiVW90aThEcU16TmcrTkoxN0pEU1VTaHRhWW1ZQUptbG1qd0p2SXgyVlgveWJHVjcwNC92U0JnZ1JhZTVpMkhmV2h5c1pDVXBubC9BNUpEeEN4cGM3b0NUalBKZkpDOFNhUnEzNmFyVXlkbmpGYXpoNVUxZmlzWFZ4a2JCN2RIMDQiLCJtYWMiOiJiNDIyMjA4ZTVjZTUwY2QxOTA2NGRkNjhjNmMyMGRhNDZkODE1YzEzY2Q2ODhhMDliYjI5ODllNzE3ZWE2MDBjIiwidGFnIjoiIn0%3D"
 };
 
 /* ================= HELPERS ================= */
