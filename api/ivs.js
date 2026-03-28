@@ -4,40 +4,59 @@ const zlib    = require("zlib");
 
 const router = express.Router();
 
-/* ================= CONFIG ================= */
-const BASE_URL       = "https://www.ivasms.com";
-const TERMINATION_ID = "970639";
-const USER_AGENT     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36";
+const BASE_URL  = "https://www.ivasms.com";
+const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36";
 
-/* ================= COOKIES (Update when expired) ================= */
-// Jab expire ho: browser me login karo → DevTools → Network → koi bhi request
-// → Request Headers → Cookie se XSRF-TOKEN aur ivas_sms_session copy karo
 let COOKIES = {
   "XSRF-TOKEN":       "eyJpdiI6InpldHRyNDR5Z2RpMzRvUkRCc2ZUclE9PSIsInZhbHVlIjoiRDI4S1lQSW0zZEdSSHQ5RWdPNktnT0RDd2dBM0srTUNSK09TNk9Hazg3bFQ1SEd1citBNHhLb1A3M3JDcDRTZWlYV3ZFMzlOd0FEMitZckFscHZZREVwRkJwa2lVVXg3OXZMSDNRcEZlU05uUk9Fd0hsbHVDRlFpRmVCd08yankiLCJtYWMiOiI5YWQyZGRlYmZkNTJkZTQ0NjBlZDQ1MWUxNDExODJmMjViZmZlZDEwM2JiZDE0Yzg4ZTQ4MTk3NzIyYzAzYzczIiwidGFnIjoiIn0%3D",
   "ivas_sms_session": "eyJpdiI6IjRXa0NVMEtETHNUR2luN1Q3S2xYTGc9PSIsInZhbHVlIjoiVW90aThEcU16TmcrTkoxN0pEU1VTaHRhWW1ZQUptbG1qd0p2SXgyVlgveWJHVjcwNC92U0JnZ1JhZTVpMkhmV2h5c1pDVXBubC9BNUpEeEN4cGM3b0NUalBKZkpDOFNhUnEzNmFyVXlkbmpGYXpoNVUxZmlzWFZ4a2JCN2RIMDQiLCJtYWMiOiJiNDIyMjA4ZTVjZTUwY2QxOTA2NGRkNjhjNmMyMGRhNDZkODE1YzEzY2Q2ODhhMDliYjI5ODllNzE3ZWE2MDBjIiwidGFnIjoiIn0%3D"
 };
 
-/* ================= HELPERS ================= */
+let cachedToken = null;
+let tokenExpiry = 0;
+
+/* ── HELPERS ── */
 function getToday() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
 }
-
 function cookieString() {
   return Object.entries(COOKIES).map(([k,v]) => `${k}=${v}`).join("; ");
 }
-
 function getXsrf() {
   try { return decodeURIComponent(COOKIES["XSRF-TOKEN"] || ""); }
   catch { return COOKIES["XSRF-TOKEN"] || ""; }
 }
-
 function safeJSON(text) {
   try { return JSON.parse(text); }
   catch { return { error: "Invalid JSON", preview: text.substring(0, 300) }; }
 }
+function withTimeout(p, ms) {
+  return Promise.race([p, new Promise((_,r) => setTimeout(() => r(new Error(`Timeout ${ms}ms`)), ms))]);
+}
+// Extract unique matches from html using multiple patterns
+function extractAll(html, ...patterns) {
+  const results = [];
+  for (const re of patterns) {
+    for (const m of html.matchAll(re)) results.push(m[1]);
+  }
+  return [...new Set(results)];
+}
 
-/* ================= HTTP REQUEST ================= */
+/* ── BATCH PARALLEL (500 numbers, 50 at a time) ── */
+async function batchParallel(items, fn, batchSize = 50) {
+  const results = [];
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const batchResults = await Promise.allSettled(batch.map(fn));
+    batchResults.forEach(r => {
+      if (r.status === "fulfilled") results.push(...(Array.isArray(r.value) ? r.value : [r.value]));
+    });
+  }
+  return results;
+}
+
+/* ── HTTP REQUEST ── */
 function makeRequest(method, path, body, contentType, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
     const headers = {
@@ -53,28 +72,22 @@ function makeRequest(method, path, body, contentType, extraHeaders = {}) {
       "Referer":          `${BASE_URL}/portal`,
       ...extraHeaders
     };
-
     if (method === "POST" && body) {
       headers["Content-Type"]   = contentType;
       headers["Content-Length"] = Buffer.byteLength(body);
     }
-
     const req = https.request(BASE_URL + path, { method, headers }, res => {
-      // Auto-update cookies from response
       if (res.headers["set-cookie"]) {
         res.headers["set-cookie"].forEach(c => {
           const sc = c.split(";")[0];
           const ki = sc.indexOf("=");
           if (ki > -1) {
             const k = sc.substring(0, ki).trim();
-            const v = sc.substring(ki + 1).trim();
-            if (k === "XSRF-TOKEN" || k === "ivas_sms_session") {
-              COOKIES[k] = v;
-            }
+            const v = sc.substring(ki+1).trim();
+            if (k === "XSRF-TOKEN" || k === "ivas_sms_session") COOKIES[k] = v;
           }
         });
       }
-
       let chunks = [];
       res.on("data", d => chunks.push(d));
       res.on("end", () => {
@@ -84,175 +97,53 @@ function makeRequest(method, path, body, contentType, extraHeaders = {}) {
           if (enc === "gzip") buf = zlib.gunzipSync(buf);
           else if (enc === "br") buf = zlib.brotliDecompressSync(buf);
         } catch {}
-
         const text = buf.toString("utf-8");
-
-        if (res.statusCode === 401 || res.statusCode === 419 ||
-            text.includes('"message":"Unauthenticated"')) {
+        if (res.statusCode === 401 || res.statusCode === 419 || text.includes('"message":"Unauthenticated"'))
           return reject(new Error("SESSION_EXPIRED"));
-        }
-
         resolve({ status: res.statusCode, body: text });
       });
     });
-
+    req.setTimeout(10000, () => req.destroy(new Error("Timeout 10s")));
     req.on("error", reject);
     if (body) req.write(body);
     req.end();
   });
 }
 
-/* ================= FETCH _token FROM PORTAL ================= */
+/* ── TOKEN (cached 5 min) ── */
 async function fetchToken() {
-  const resp = await makeRequest("GET", "/portal", null, null, {
-    "Accept": "text/html,application/xhtml+xml,*/*"
+  if (cachedToken && Date.now() < tokenExpiry) return cachedToken;
+  const resp = await makeRequest("GET", "/portal", null, null, { "Accept": "text/html,*/*" });
+  const m = resp.body.match(/name="_token"\s+value="([^"]+)"/) ||
+            resp.body.match(/"csrf-token"\s+content="([^"]+)"/);
+  cachedToken = m ? m[1] : null;
+  tokenExpiry = Date.now() + 5 * 60 * 1000;
+  return cachedToken;
+}
+
+/* ── PARSE SMS MESSAGES ── */
+function parseSMSMessages(html, range, number, date) {
+  const rows = [];
+  const decode = t => (t || "")
+    .replace(/&lt;[^&]*&gt;/g, "").replace(/&lt;/g,"").replace(/&gt;/g,"")
+    .replace(/&amp;/g,"&").replace(/&#039;/g,"'").replace(/&quot;/g,'"')
+    .replace(/<[^>]+>/g,"").replace(/[\r\n]+/g," ").replace(/\s+/g," ").trim();
+
+  const senders = [...html.matchAll(/class="cli-tag"[^>]*>([^<]+)<\/span>/g)].map(m => m[1].trim());
+  const msgs    = [...html.matchAll(/class="msg-text"[^>]*>([\s\S]*?)<\/div>/g)].map(m => decode(m[1]));
+  const times   = [...html.matchAll(/class="time-cell"[^>]*>\s*(\d{2}:\d{2}:\d{2})\s*</g)].map(m => m[1]);
+
+  msgs.forEach((msg, i) => {
+    if (!msg) return;
+    rows.push([`${date} ${times[i] || "00:00:00"}`, range, number, senders[i] || "SMS", msg, "$", 0]);
   });
-  const match = resp.body.match(/name="_token"\s+value="([^"]+)"/) ||
-                resp.body.match(/"csrf-token"\s+content="([^"]+)"/);
-  return match ? match[1] : null;
+  return rows;
 }
 
-/* ================= PARSE HTML HELPERS ================= */
-function stripHTML(html) {
-  return (html || "").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
-}
-
-function parseNumbersHTML(html) {
-  const results = [];
-  // Extract range names
-  const rangeMatches = html.matchAll(/toggleRange\(['"](.*?)['"]\s*,\s*['"](.*?)['"]/g);
-  const ranges = {};
-  for (const m of rangeMatches) {
-    ranges[m[2]] = m[1]; // id -> name
-  }
-
-  // Extract numbers under each range
-  const numberMatches = html.matchAll(/data-number="([^"]+)"[^>]*data-range="([^"]+)"|class="num[^"]*"[^>]*>([^<]+)<\/|<td[^>]*>([0-9]{6,15})<\/td>/g);
-
-  // Simple: extract all phone numbers (6-15 digits)
-  const phonePattern = /(\d{7,15})/g;
-  const rangePattern = /toggleRange\(['"]([^'"]+)['"]/g;
-
-  let rangeNames = [];
-  let rm;
-  while ((rm = rangePattern.exec(html)) !== null) {
-    rangeNames.push(rm[1]);
-  }
-
-  // Get number rows - look for number containers
-  const rowPattern = /class="num(?:ber)?[^"]*"[^>]*>([\s\S]*?)<\/(?:div|td|tr)/g;
-  let rowMatch;
-  let idx = 0;
-  while ((rowMatch = rowPattern.exec(html)) !== null) {
-    const text = stripHTML(rowMatch[1]);
-    const nums = text.match(/\d{7,15}/g);
-    if (nums) {
-      nums.forEach(n => {
-        results.push({
-          number: n,
-          range:  rangeNames[idx] || "",
-          status: "Active"
-        });
-      });
-      idx++;
-    }
-  }
-
-  // Fallback: just extract all numbers from HTML
-  if (results.length === 0) {
-    const allNums = html.match(/\d{9,15}/g) || [];
-    const unique  = [...new Set(allNums)];
-    unique.forEach(n => results.push({ number: n, range: "", status: "Active" }));
-  }
-
-  return { total: results.length, aaData: results };
-}
-
-function parseSMSHTML(html) {
-  const results = [];
-
-  // Try JSON first
-  try {
-    const json = JSON.parse(html);
-    if (json.data || json.aaData || Array.isArray(json)) return json;
-  } catch {}
-
-  // Parse HTML table rows
-  const rowPattern = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-  let rowMatch;
-  while ((rowMatch = rowPattern.exec(html)) !== null) {
-    const row  = rowMatch[1];
-    const cols = [];
-    const tdPattern = /<td[^>]*>([\s\S]*?)<\/td>/gi;
-    let tdMatch;
-    while ((tdMatch = tdPattern.exec(row)) !== null) {
-      cols.push(stripHTML(tdMatch[1]));
-    }
-    if (cols.length >= 3) {
-      results.push({
-        date:    cols[0] || "",
-        number:  cols[1] || "",
-        message: cols[2] || "",
-        status:  cols[3] || "",
-        raw:     cols
-      });
-    }
-  }
-
-  return { total: results.length, aaData: results, rawPreview: results.length === 0 ? html.substring(0, 500) : undefined };
-}
-
-/* ================= GET NUMBERS ================= */
-async function getNumbers(token) {
-  const ts   = Date.now();
-  const path = `/portal/numbers?draw=1`
-    + `&columns[0][data]=number_id&columns[0][name]=id&columns[0][orderable]=false`
-    + `&columns[1][data]=Number`
-    + `&columns[2][data]=range`
-    + `&columns[3][data]=A2P`
-    + `&columns[4][data]=LimitA2P`
-    + `&columns[5][data]=limit_cli_a2p`
-    + `&columns[6][data]=limit_cli_did_a2p`
-    + `&columns[7][data]=action&columns[7][searchable]=false&columns[7][orderable]=false`
-    + `&order[0][column]=1&order[0][dir]=desc`
-    + `&start=0&length=5000&search[value]=&_=${ts}`;
-
-  const resp = await makeRequest("GET", path, null, null, {
-    "Referer":      `${BASE_URL}/portal/numbers`,
-    "Accept":       "application/json, text/javascript, */*; q=0.01",
-    "X-CSRF-TOKEN": token
-  });
-
-  const json = safeJSON(resp.body);
-  return fixNumbers(json);
-}
-
-function fixNumbers(json) {
-  if (!json || !json.data) return json;
-
-  // Format: [range, "", number, "Weekly", ""]
-  const aaData = json.data.map(row => [
-    row.range  || "",
-    "",
-    String(row.Number || ""),
-    "Weekly",
-    ""
-  ]);
-
-  return {
-    sEcho:              2,
-    iTotalRecords:      String(json.recordsTotal || aaData.length),
-    iTotalDisplayRecords: String(json.recordsFiltered || aaData.length),
-    aaData
-  };
-}
-
-/* ================= GET SMS ================= */
+/* ── GET SMS (fully parallel, 500 numbers in ~2s) ── */
 async function getSMS(token) {
   const today    = getToday();
   const boundary = "----WebKitFormBoundary6I2Js7TBhcJuwIqw";
-  const ua       = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36";
-
   const parts = [
     `--${boundary}\r\nContent-Disposition: form-data; name="from"\r\n\r\n${today}`,
     `--${boundary}\r\nContent-Disposition: form-data; name="to"\r\n\r\n${today}`,
@@ -261,48 +152,51 @@ async function getSMS(token) {
   ].join("\r\n");
 
   // Step 1: Get ranges
-  const r1 = await makeRequest(
-    "POST", "/portal/sms/received/getsms", parts,
+  const r1 = await makeRequest("POST", "/portal/sms/received/getsms", parts,
     `multipart/form-data; boundary=${boundary}`,
-    { "Referer": `${BASE_URL}/portal/sms/received`, "Accept": "text/html, */*; q=0.01", "User-Agent": ua }
+    { "Referer": `${BASE_URL}/portal/sms/received`, "Accept": "text/html, */*; q=0.01" }
   );
 
-  const ranges = [...r1.body.matchAll(/toggleRange\('([^']+)'/g)].map(m => m[1]);
-  console.log(`[IVAS] Ranges: ${ranges.join(", ")}`);
+  const ranges = extractAll(r1.body,
+    /toggleRange\(\'([^\']+)\'/g,
+    /toggleRange\("([^"]+)"/g,
+    /data-range="([^"]+)"/g
+  );
 
-  const allRows = [];
-
-  for (const range of ranges) {
-    // Step 2: Get numbers per range
-    const b2 = new URLSearchParams({ _token: token, start: today, end: today, range }).toString();
-    const r2  = await makeRequest(
-      "POST", "/portal/sms/received/getsms/number", b2,
-      "application/x-www-form-urlencoded",
-      { "Referer": `${BASE_URL}/portal/sms/received`, "Accept": "text/html, */*; q=0.01", "User-Agent": ua }
-    ).catch(() => null);
-
-    if (!r2) continue;
-
-    // Extract numbers from HTML: toggleNum..('NUMBER','NUMBER_ID')
-    const numbers = [...r2.body.matchAll(/toggleNum[^(]+\('(\d+)'/g)].map(m => m[1]);
-    console.log(`[IVAS] ${range} → numbers: ${numbers.join(", ")}`);
-
-    for (const number of numbers) {
-      // Step 3: Get actual OTP SMS for each number
-      const b3 = new URLSearchParams({ _token: token, start: today, end: today, Number: number, Range: range }).toString();
-      const r3  = await makeRequest(
-        "POST", "/portal/sms/received/getsms/number/sms", b3,
-        "application/x-www-form-urlencoded",
-        { "Referer": `${BASE_URL}/portal/sms/received`, "Accept": "text/html, */*; q=0.01", "User-Agent": ua }
-      ).catch(() => null);
-
-      if (!r3) continue;
-
-      // Parse OTP messages from HTML
-      const msgs = parseSMSMessages(r3.body, range, number, today);
-      allRows.push(...msgs);
-    }
+  if (ranges.length === 0) {
+    return { sEcho:1, iTotalRecords:"0", iTotalDisplayRecords:"0", aaData:[], debug: r1.body.substring(0,300) };
   }
+
+  // Step 2: ALL ranges parallel — get numbers list for each
+  const rangeNumberPairs = (await Promise.allSettled(
+    ranges.map(async range => {
+      const b2 = new URLSearchParams({ _token: token, start: today, end: today, range }).toString();
+      try {
+        const r2 = await withTimeout(makeRequest("POST", "/portal/sms/received/getsms/number", b2,
+          "application/x-www-form-urlencoded",
+          { "Referer": `${BASE_URL}/portal/sms/received`, "Accept": "text/html, */*; q=0.01" }
+        ), 8000);
+        const numbers = extractAll(r2.body,
+          /toggleNum\w*\('([^']+)'/g,
+          /toggleNum\w*\("([^"]+)"/g,
+          /data-number="([^"]+)"/g
+        ).map(v => v.split('_')[0]);
+        return numbers.map(number => ({ range, number }));
+      } catch { return []; }
+    })
+  )).filter(r => r.status === "fulfilled").flatMap(r => r.value);
+
+  // Step 3: ALL numbers (from ALL ranges) in one big batch — 50 at a time = ~2s for 500
+  const allRows = await batchParallel(rangeNumberPairs, async ({ range, number }) => {
+    const b3 = new URLSearchParams({ _token: token, start: today, end: today, Number: number, Range: range }).toString();
+    try {
+      const r3 = await withTimeout(makeRequest("POST", "/portal/sms/received/getsms/number/sms", b3,
+        "application/x-www-form-urlencoded",
+        { "Referer": `${BASE_URL}/portal/sms/received`, "Accept": "text/html, */*; q=0.01" }
+      ), 8000);
+      return parseSMSMessages(r3.body, range, number, today);
+    } catch { return []; }
+  }, 50);
 
   return {
     sEcho:                1,
@@ -312,252 +206,79 @@ async function getSMS(token) {
   };
 }
 
-function parseSMSMessages(html, range, number, date) {
-  const rows  = [];
-  const clean = t => (t || "")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&").replace(/&#039;/g, "'")
-    .replace(/\s+/g, " ").trim();
-
-  // Extract all <tr> rows (skip header)
-  const trAll = [...html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)];
-
-  for (const trM of trAll) {
-    const row = trM[1];
-    if (row.includes("<th")) continue;
-
-    // Sender from cli-tag
-    const senderM = row.match(/class="cli-tag"[^>]*>([^<]+)</);
-    const sender  = senderM ? senderM[1].trim() : "SMS";
-
-    // Message from msg-text div (multiline content)
-    const msgM   = row.match(/class="msg-text"[^>]*>([\s\S]*?)<\/div>/i);
-    const message = msgM ? clean(msgM[1]) : "";
-
-    // Time from time-cell
-    const timeM = row.match(/class="time-cell"[^>]*>\s*([0-9:]+)\s*</);
-    const time  = timeM ? timeM[1].trim() : "00:00:00";
-
-    if (message) {
-      rows.push([
-        `${date} ${time}`,
-        range,
-        number,
-        sender,
-        message,
-        "$",
-        0
-      ]);
-    }
-  }
-
-  return rows;
-}
-
-/* ================= GET NUMBERS ================= */
+/* ── GET NUMBERS ── */
 async function getNumbers(token) {
   const ts   = Date.now();
   const path = `/portal/numbers?draw=1`
     + `&columns[0][data]=number_id&columns[0][name]=id&columns[0][orderable]=false`
-    + `&columns[1][data]=Number`
-    + `&columns[2][data]=range`
-    + `&columns[3][data]=A2P`
-    + `&columns[4][data]=LimitA2P`
-    + `&columns[5][data]=limit_cli_a2p`
+    + `&columns[1][data]=Number&columns[2][data]=range&columns[3][data]=A2P`
+    + `&columns[4][data]=LimitA2P&columns[5][data]=limit_cli_a2p`
     + `&columns[6][data]=limit_cli_did_a2p`
     + `&columns[7][data]=action&columns[7][searchable]=false&columns[7][orderable]=false`
-    + `&order[0][column]=1&order[0][dir]=desc`
-    + `&start=0&length=5000&search[value]=&_=${ts}`;
+    + `&order[0][column]=1&order[0][dir]=desc&start=0&length=5000&search[value]=&_=${ts}`;
 
   const resp = await makeRequest("GET", path, null, null, {
-    "Referer":      `${BASE_URL}/portal/numbers`,
-    "Accept":       "application/json, text/javascript, */*; q=0.01",
-    "X-CSRF-TOKEN": token
+    "Referer": `${BASE_URL}/portal/numbers`,
+    "Accept":  "application/json, text/javascript, */*; q=0.01"
   });
 
   const json = safeJSON(resp.body);
-  return fixNumbers(json);
-}
+  if (!json?.data) return json;
 
-function fixNumbers(json) {
-  if (!json || !json.data) return json;
-
-  // Format: [range, "", number, "Weekly", ""]
-  const aaData = json.data.map(row => [
-    row.range  || "",
-    "",
-    String(row.Number || ""),
-    "Weekly",
-    ""
-  ]);
+  const aaData = json.data.map(row => [row.range||"", "", String(row.Number||""), "Weekly", ""]);
 
   return {
-    sEcho:              2,
-    iTotalRecords:      String(json.recordsTotal || aaData.length),
+    sEcho:                2,
+    iTotalRecords:        String(json.recordsTotal    || aaData.length),
     iTotalDisplayRecords: String(json.recordsFiltered || aaData.length),
     aaData
   };
 }
 
-/* ================= GET SMS ================= */
-async function getSMS(token) {
-  const today    = getToday();
-  const boundary = "----WebKitFormBoundary6I2Js7TBhcJuwIqw";
-
-  const parts = [
-    `--${boundary}\r\nContent-Disposition: form-data; name="from"\r\n\r\n${today}`,
-    `--${boundary}\r\nContent-Disposition: form-data; name="to"\r\n\r\n${today}`,
-    `--${boundary}\r\nContent-Disposition: form-data; name="_token"\r\n\r\n${token}`,
-    `--${boundary}--`
-  ].join("\r\n");
-
-  // Step 1: Get ranges list
-  const r1 = await makeRequest(
-    "POST", "/portal/sms/received/getsms", parts,
-    `multipart/form-data; boundary=${boundary}`,
-    {
-      "Referer":    `${BASE_URL}/portal/sms/received`,
-      "Accept":     "text/html, */*; q=0.01",
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36"
-    }
-  );
-
-  // Extract range names from HTML
-  const rangeMatches = [...r1.body.matchAll(/toggleRange\('([^']+)'/g)];
-  const ranges = rangeMatches.map(m => m[1]);
-  console.log(`[IVAS] Found ranges: ${ranges.join(", ")}`);
-
-  if (ranges.length === 0) {
-    return { sEcho: 1, iTotalRecords: "0", iTotalDisplayRecords: "0", aaData: [] };
-  }
-
-  // Step 2: Fetch numbers+OTP for each range
-  const allRows = [];
-  for (const range of ranges) {
-    try {
-      const body = new URLSearchParams({
-        _token: token,
-        start:  today,
-        end:    today,
-        range:  range
-      }).toString();
-
-      const r2 = await makeRequest(
-        "POST", "/portal/sms/received/getsms/number", body,
-        "application/x-www-form-urlencoded",
-        {
-          "Referer":    `${BASE_URL}/portal/sms/received`,
-          "Accept":     "text/html, */*; q=0.01",
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
-      );
-
-      // Parse number rows from HTML
-      const rows = parseNumberRows(r2.body, range);
-      allRows.push(...rows);
-    } catch(e) {
-      console.warn(`[IVAS] Range ${range} failed:`, e.message);
-    }
-  }
-
-  return {
-    sEcho:                1,
-    iTotalRecords:        String(allRows.length),
-    iTotalDisplayRecords: String(allRows.length),
-    aaData:               allRows
-  };
-}
-
-function parseNumberRows(html, range) {
-  const rows = [];
-
-  // Pattern: number rows contain number + message
-  // Look for data attributes or text content
-  const numPattern  = /data-number="([^"]+)"|class="[^"]*number[^"]*"[^>]*>([^<]+)<|\b(\d{7,15})\b/g;
-  const msgPattern  = /data-message="([^"]+)"|class="[^"]*message[^"]*"[^>]*>([^<]+)<|class="[^"]*sms[^"]*"[^>]*>([^<]+)</g;
-
-  // Try row-based parsing
-  const rowPattern = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-  let rowMatch;
-  while ((rowMatch = rowPattern.exec(html)) !== null) {
-    const row  = rowMatch[1];
-    const tds  = [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map(m =>
-      m[1].replace(/<[^>]+>/g, "").trim()
-    );
-    if (tds.length >= 2) {
-      const number  = tds.find(t => /^\d{7,15}$/.test(t.replace(/\s/,""))) || "";
-      const message = tds.find(t => t.length > 5 && !/^\d+$/.test(t) && t !== number) || "";
-      if (number || message) {
-        rows.push([
-          new Date().toISOString().replace("T"," ").substring(0,19),
-          range,
-          number,
-          "SMS",
-          message,
-          "$",
-          0
-        ]);
-      }
-    }
-  }
-
-  // Fallback: extract numbers and messages from divs
-  if (rows.length === 0) {
-    const divNums = [...html.matchAll(/\b(\d{9,15})\b/g)].map(m => m[1]);
-    const msgs    = [...html.matchAll(/class="[^"]*msg[^"]*"[^>]*>([^<]+)</gi)].map(m => m[1].trim());
-    const unique  = [...new Set(divNums)];
-    unique.forEach((num, i) => {
-      rows.push([
-        new Date().toISOString().replace("T"," ").substring(0,19),
-        range, num, "SMS",
-        msgs[i] || "",
-        "$", 0
-      ]);
-    });
-  }
-
-  return rows;
-}
-
-/* ================= ROUTES ================= */
-
-// Main API
+/* ── ROUTES ── */
 router.get("/", async (req, res) => {
   const { type } = req.query;
-  if (!type) return res.json({ error: "Use ?type=numbers or ?type=sms" });
+  if (!type) return res.json({ error: "Use ?type=sms or ?type=numbers" });
 
   try {
     const token = await fetchToken();
-    if (!token) {
-      return res.status(401).json({
-        error: "Session expired",
-        fix:   "POST /api/ivasms/update-session with xsrf and session cookies"
-      });
-    }
+    if (!token) return res.status(401).json({ error: "Session expired — update cookies" });
 
-    if (type === "numbers") return res.json(await getNumbers(token));
     if (type === "sms")     return res.json(await getSMS(token));
+    if (type === "numbers") return res.json(await getNumbers(token));
 
-    res.json({ error: "Invalid type. Use numbers or sms" });
-
+    res.json({ error: "Use ?type=sms or ?type=numbers" });
   } catch (err) {
-    if (err.message === "SESSION_EXPIRED") {
-      return res.status(401).json({
-        error: "Session expired — update cookies",
-        fix:   "POST /api/ivasms/update-session with xsrf and session"
-      });
-    }
+    if (err.message === "SESSION_EXPIRED")
+      return res.status(401).json({ error: "Session expired — update cookies" });
     res.status(500).json({ error: err.message });
   }
 });
 
-// Raw debug: show actual OTP SMS HTML (level 3)
-router.get("/raw-sms", async (req, res) => {
+router.post("/update-session", express.json(), (req, res) => {
+  const { xsrf, session } = req.body || {};
+  if (!xsrf || !session) return res.status(400).json({ error: "Required: xsrf and session" });
+  COOKIES["XSRF-TOKEN"]       = xsrf;
+  COOKIES["ivas_sms_session"] = session;
+  cachedToken = null;
+  res.json({ success: true });
+});
+
+router.get("/status", async (req, res) => {
+  try {
+    const token = await fetchToken();
+    res.json({ status: token ? "✅ Active" : "❌ Expired", hasToken: !!token });
+  } catch (e) {
+    res.json({ status: "❌ Expired", error: e.message });
+  }
+});
+
+/* ── DEBUG ROUTE — check exact HTML structure ── */
+router.get("/debug-sms", async (req, res) => {
   try {
     const token    = await fetchToken();
+    if (!token) return res.status(401).json({ error: "Session expired" });
     const today    = getToday();
-    const ua       = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36";
     const boundary = "----WebKitFormBoundary6I2Js7TBhcJuwIqw";
     const parts = [
       `--${boundary}\r\nContent-Disposition: form-data; name="from"\r\n\r\n${today}`,
@@ -565,64 +286,62 @@ router.get("/raw-sms", async (req, res) => {
       `--${boundary}\r\nContent-Disposition: form-data; name="_token"\r\n\r\n${token}`,
       `--${boundary}--`
     ].join("\r\n");
+
     // Level 1
     const r1 = await makeRequest("POST", "/portal/sms/received/getsms", parts,
       `multipart/form-data; boundary=${boundary}`,
-      { "Referer": `${BASE_URL}/portal/sms/received`, "Accept": "text/html, */*; q=0.01", "User-Agent": ua }
+      { "Referer": `${BASE_URL}/portal/sms/received`, "Accept": "text/html, */*; q=0.01" }
     );
-    const rangeMatch = r1.body.match(/toggleRange\('([^']+)'/);
-    if (!rangeMatch) return res.send("No ranges:\n" + r1.body.substring(0,1000));
-    const range = rangeMatch[1];
-    // Level 2
-    const r2 = await makeRequest("POST", "/portal/sms/received/getsms/number",
-      new URLSearchParams({ _token: token, start: today, end: today, range }).toString(),
+
+    const ranges = extractAll(r1.body,
+      /toggleRange\('([^']+)'/g,
+      /toggleRange\("([^"]+)"/g,
+      /data-range="([^"]+)"/g
+    );
+
+    if (ranges.length === 0) {
+      return res.json({ step: "L1_NO_RANGES", html_preview: r1.body.substring(0, 1000) });
+    }
+
+    // Level 2 — first range only
+    const range = ranges[0];
+    const b2 = new URLSearchParams({ _token: token, start: today, end: today, range }).toString();
+    const r2 = await makeRequest("POST", "/portal/sms/received/getsms/number", b2,
       "application/x-www-form-urlencoded",
-      { "Referer": `${BASE_URL}/portal/sms/received`, "Accept": "text/html, */*; q=0.01", "User-Agent": ua }
+      { "Referer": `${BASE_URL}/portal/sms/received`, "Accept": "text/html, */*; q=0.01" }
     );
-    const numMatch = r2.body.match(/toggleNum[^(]+\('(\d+)'/);
-    if (!numMatch) return res.send(`Range: ${range}\nNo numbers:\n` + r2.body.substring(0,1000));
-    const number = numMatch[1];
-    // Level 3
-    const r3 = await makeRequest("POST", "/portal/sms/received/getsms/number/sms",
-      new URLSearchParams({ _token: token, start: today, end: today, Number: number, Range: range }).toString(),
+
+    const numbers = extractAll(r2.body,
+      /toggleNum\w*\('(\d+)'/g,
+      /toggleNum\w*\("(\d+)"/g,
+      /toggleNum[^(]*\('([^']+)'/g,
+      /data-number="(\d+)"/g
+    ).map(v => v.split('_')[0]);
+
+    if (numbers.length === 0) {
+      return res.json({ step: "L2_NO_NUMBERS", range, html_preview: r2.body.substring(0, 1000) });
+    }
+
+    // Level 3 — first number only
+    const number = numbers[0];
+    const b3 = new URLSearchParams({ _token: token, start: today, end: today, Number: number, Range: range }).toString();
+    const r3 = await makeRequest("POST", "/portal/sms/received/getsms/number/sms", b3,
       "application/x-www-form-urlencoded",
-      { "Referer": `${BASE_URL}/portal/sms/received`, "Accept": "text/html, */*; q=0.01", "User-Agent": ua }
+      { "Referer": `${BASE_URL}/portal/sms/received`, "Accept": "text/html, */*; q=0.01" }
     );
-    res.set("Content-Type", "text/plain");
-    res.send(`Range: ${range}\nNumber: ${number}\n\n` + r3.body.substring(0, 5000));
+
+    const parsed = parseSMSMessages(r3.body, range, number, today);
+
+    return res.json({
+      step:          "L3_DONE",
+      range,
+      number,
+      parsed_count:  parsed.length,
+      parsed,
+      html_preview:  r3.body.substring(0, 2000)
+    });
+
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// Cookie update endpoint — POST with JSON body
-// { "xsrf": "...", "session": "..." }
-router.post("/update-session", express.json(), (req, res) => {
-  const { xsrf, session } = req.body || {};
-  if (!xsrf || !session) {
-    return res.status(400).json({
-      error: "Required: xsrf and session",
-      example: { xsrf: "XSRF-TOKEN value", session: "ivas_sms_session value" }
-    });
-  }
-  COOKIES["XSRF-TOKEN"]       = xsrf;
-  COOKIES["ivas_sms_session"] = session;
-  console.log("✅ [IVAS] Cookies updated manually");
-  res.json({ success: true, message: "Cookies updated!" });
-});
-
-// Check session status
-router.get("/status", async (req, res) => {
-  try {
-    const token = await fetchToken();
-    res.json({
-      status:    token ? "✅ Session active" : "❌ Session expired",
-      hasToken:  !!token,
-      cookieKeys: Object.keys(COOKIES)
-    });
-  } catch (e) {
-    res.json({ status: "❌ Session expired", error: e.message });
-  }
-});
-
 module.exports = router;
-
-
