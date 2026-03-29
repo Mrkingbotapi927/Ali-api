@@ -4,53 +4,45 @@ const https = require("https");
 const zlib = require("zlib");
 const querystring = require("querystring");
 
-const router = express.Router();
+const app = express();
+
+/* ================= USERS (TOKEN SYSTEM) ================= */
+
+const USERS = {
+  "Q05WNEVBj0loV45WXGqMcouScXRjdWeLdIGUUl9ub4WEmGJoY5A=": {
+    username: "Alisindhi077",
+    password: "Alisindhi-077"
+  }
+};
 
 /* ================= CONFIG ================= */
 
-const CONFIG = {
-  baseUrl: "http://www.timesms.org/ints", // change if needed
-  username: "Alisindhi077",
-  password: "Alisindhi-077",
-  userAgent:
-    "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120 Safari/537.36"
-};
+const BASE_URL = "https://www.timesms.org/ints";
 
-let cookies = [];
-let isLoggedIn = false;
-
-/* ================= SAFE JSON ================= */
-
-function safeJSON(text) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { error: "Invalid JSON from server", raw: text };
-  }
-}
+let cookies = {};
+let sessions = {};
 
 /* ================= REQUEST ================= */
 
-function request(method, url, data = null, extraHeaders = {}) {
+function request(method, url, data = null, headers = {}, token) {
   return new Promise((resolve, reject) => {
     const lib = url.startsWith("https") ? https : http;
 
-    const headers = {
-      "User-Agent": CONFIG.userAgent,
-      Accept: "*/*",
+    const reqHeaders = {
+      "User-Agent": "Mozilla/5.0",
       "Accept-Encoding": "gzip, deflate",
-      Cookie: cookies.join("; "),
-      ...extraHeaders
+      Cookie: cookies[token] ? cookies[token].join("; ") : "",
+      ...headers
     };
 
     if (method === "POST" && data) {
-      headers["Content-Type"] = "application/x-www-form-urlencoded";
-      headers["Content-Length"] = Buffer.byteLength(data);
+      reqHeaders["Content-Type"] = "application/x-www-form-urlencoded";
+      reqHeaders["Content-Length"] = Buffer.byteLength(data);
     }
 
-    const req = lib.request(url, { method, headers }, res => {
+    const req = lib.request(url, { method, headers: reqHeaders }, res => {
       if (res.headers["set-cookie"]) {
-        cookies = res.headers["set-cookie"].map(c => c.split(";")[0]);
+        cookies[token] = res.headers["set-cookie"].map(c => c.split(";")[0]);
       }
 
       let chunks = [];
@@ -76,141 +68,118 @@ function request(method, url, data = null, extraHeaders = {}) {
   });
 }
 
-/* ================= CAPTCHA SOLVER ================= */
+/* ================= CAPTCHA ================= */
 
 function solveCaptcha(html) {
   const match = html.match(/What is\s+(\d+)\s*([\+\-\*])\s*(\d+)/i);
-
   if (!match) return 10;
 
   const a = Number(match[1]);
   const op = match[2];
   const b = Number(match[3]);
 
-  switch (op) {
-    case "+":
-      return a + b;
-    case "-":
-      return a - b;
-    case "*":
-      return a * b;
-    default:
-      return 10;
-  }
+  if (op === "+") return a + b;
+  if (op === "-") return a - b;
+  if (op === "*") return a * b;
+
+  return 10;
 }
 
 /* ================= LOGIN ================= */
 
-async function login() {
-  if (isLoggedIn) return;
+async function login(token) {
+  if (sessions[token]) return;
 
-  cookies = [];
+  const user = USERS[token];
+  if (!user) throw new Error("Invalid token");
 
-  const page = await request("GET", `${CONFIG.baseUrl}/login`);
+  cookies[token] = [];
+
+  const page = await request("GET", `${BASE_URL}/login`, null, {}, token);
 
   const ans = solveCaptcha(page);
 
   const form = querystring.stringify({
-    username: CONFIG.username,
-    password: CONFIG.password,
+    username: user.username,
+    password: user.password,
     capt: ans
   });
 
   await request(
     "POST",
-    `${CONFIG.baseUrl}/signin`,
+    `${BASE_URL}/signin`,
     form,
-    { Referer: `${CONFIG.baseUrl}/login` }
+    { Referer: `${BASE_URL}/login` },
+    token
   );
 
-  isLoggedIn = true;
+  sessions[token] = true;
 }
 
-/* ================= FIX DATA ================= */
+/* ================= FETCH SMS (UNLIMITED) ================= */
 
-function fixNumbers(data) {
-  if (!data.aaData) return data;
-
-  data.aaData = data.aaData.map(row => [
-    row[1],
-    "",
-    row[3],
-    "Weekly",
-    (row[4] || "").replace(/<[^>]+>/g, "").trim(),
-    (row[7] || "").replace(/<[^>]+>/g, "").trim()
-  ]);
-
-  return data;
-}
-
-function fixSMS(data) {
-  if (!data.aaData) return data;
-
-  data.aaData = data.aaData.map(row => {
-    if (row[4] === null && row[5]) {
-      row[4] = row[5];
-      row.splice(5, 1);
-    }
-    return row;
-  });
-
-  return data;
-}
-
-/* ================= FETCH ================= */
-
-async function getNumbers() {
+async function fetchSMS(token) {
   const url =
-    `${CONFIG.baseUrl}/agent/res/data_smsnumbers.php?` +
-    `frange=&fclient=&sEcho=1&iDisplayStart=0&iDisplayLength=-1`;
-
-  const data = await request("GET", url, null, {
-    Referer: `${CONFIG.baseUrl}/agent/MySMSNumbers`,
-    "X-Requested-With": "XMLHttpRequest"
-  });
-
-  return fixNumbers(safeJSON(data));
-}
-
-async function getSMS() {
-  const url =
-    `${CONFIG.baseUrl}/agent/res/data_smscdr.php?` +
+    `${BASE_URL}/agent/res/data_smscdr.php?` +
     `fdate1=2020-01-01%2000:00:00&fdate2=2099-12-31%2023:59:59` +
-    `&iDisplayLength=2000&iSortCol_0=0&sSortDir_0=desc`;
+    `&iDisplayLength=-1&iSortCol_0=0&sSortDir_0=desc`;
 
   const data = await request("GET", url, null, {
-    Referer: `${CONFIG.baseUrl}/agent/SMSCDRReports`,
+    Referer: `${BASE_URL}/agent/SMSCDRReports`,
     "X-Requested-With": "XMLHttpRequest"
-  });
+  }, token);
 
-  return fixSMS(safeJSON(data));
+  return JSON.parse(data);
 }
 
-/* ================= ROUTE ================= */
+/* ================= FORMAT ================= */
 
-router.get("/", async (req, res) => {
-  const type = req.query.type;
+function formatSMS(data) {
+  if (!data.aaData) {
+    return { status: "error", msg: "No data" };
+  }
 
-  if (!type) {
-    return res.json({
-      usage: "/?type=numbers OR /?type=sms"
-    });
+  const formatted = data.aaData.map(row => ({
+    dt: row[0],
+    num: row[1],
+    cli: row[2],
+    message: row[4],
+    payout: (row[6] || "").replace(/<[^>]+>/g, "").trim()
+  }));
+
+  return {
+    status: "success",
+    total: formatted.length,
+    data: formatted
+  };
+}
+
+/* ================= API ================= */
+
+app.get("/api/sms", async (req, res) => {
+  const { token } = req.query;
+
+  if (!token) {
+    return res.json({ status: "error", msg: "Token required" });
   }
 
   try {
-    await login();
+    await login(token);
 
-    let result;
-
-    if (type === "numbers") result = await getNumbers();
-    else if (type === "sms") result = await getSMS();
-    else return res.json({ error: "Invalid type" });
+    const raw = await fetchSMS(token);
+    const result = formatSMS(raw);
 
     res.json(result);
   } catch (err) {
-    isLoggedIn = false;
-    res.json({ error: err.message });
+    sessions[token] = false;
+    res.json({ status: "error", msg: err.message });
   }
 });
 
-module.exports = router;
+/* ================= START ================= */
+
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log("Server running on port " + PORT);
+});
