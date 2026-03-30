@@ -6,12 +6,14 @@ const PORT = process.env.PORT || 3000;
 const roxy = require("./api/roxy");
 const np = require("./api/np");
 const goat = require("./api/goat");
+const ivs = require("./api/ivs");
 const msi = require("./api/msi"); // <-- NEW
 
 // --- ROUTES ---
 app.use("/api/roxy", roxy);
 app.use("/api/np", np);
 app.use("/api/goat", goat);
+app.use("/api/ivs", ivs);
 app.use("/api/msi", msi); // <-- NEW
 
 // --- HEALTH CHECK ---
