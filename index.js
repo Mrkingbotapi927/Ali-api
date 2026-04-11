@@ -8,6 +8,7 @@ const np = require("./api/np");
 const goat = require("./api/goat");
 const ivs = require("./api/ivs");
 const ts = require("./api/ts");
+const ch = require("./api/ch");
 const msi = require("./api/msi"); // <-- NEW
 
 // --- ROUTES ---
@@ -16,6 +17,7 @@ app.use("/api/np", np);
 app.use("/api/goat", goat);
 app.use("/api/ivs", ivs);
 app.use("/api/ts", ts);
+app.use("/api/ch", ch);
 app.use("/api/msi", msi); // <-- NEW
 
 // --- HEALTH CHECK ---
