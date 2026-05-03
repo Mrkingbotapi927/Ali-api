@@ -4,6 +4,7 @@ const PORT = process.env.PORT || 3000;
 
 // --- IMPORT ALL PANELS ---
 const roxy = require("./api/roxy");
+const roxy1 = require("./api/roxy1");
 const np = require("./api/np");
 const goat = require("./api/goat");
 const ivs = require("./api/ivs");
@@ -15,6 +16,7 @@ const msi = require("./api/msi"); // <-- NEW
 
 // --- ROUTES ---
 app.use("/api/roxy", roxy);
+app.use("/api/roxy1", roxy1);
 app.use("/api/np", np);
 app.use("/api/goat", goat);
 app.use("/api/ivs", ivs);
